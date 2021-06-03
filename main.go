@@ -13,17 +13,18 @@ import (
 	"time"
 )
 
-type Valute struct {
+type Valute struct { // Структура валюты для декодирования json
 	Name  string
 	Value string
 }
 
-type ValuteInformation struct {
+type ValuteInformation struct { // Структура для хранения информации о валюте
 	Valute *Valute
 	Date   string
 }
 
-func action(url string, valutesCourse map[string][]ValuteInformation, mt *sync.Mutex) {
+func action(url string, valutesCourse map[string][]ValuteInformation, mt *sync.Mutex) { // Функция принимает
+	// сгенерированный url и делает запрос к Api центробанка, после чего достает инфориацию о валюте и записывает в мапу
 	response, _ := http.Get(url)
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
@@ -31,7 +32,7 @@ func action(url string, valutesCourse map[string][]ValuteInformation, mt *sync.M
 	decoder := xml.NewDecoder(reader)
 	decoder.CharsetReader = charset.NewReaderLabel
 	date := ""
-	for {
+	for { // парсим json
 		token, err := decoder.Token()
 		if err != nil && err != io.EOF {
 			panic(err)
@@ -42,25 +43,25 @@ func action(url string, valutesCourse map[string][]ValuteInformation, mt *sync.M
 		switch tp := token.(type) {
 		case xml.StartElement:
 			if tp.Name.Local == "ValCurs" {
-				for _, atr := range tp.Attr {
+				for _, atr := range tp.Attr { // достаем дату из полученного json
 					if atr.Name.Local == "Date" {
 						date = atr.Value
 					}
 				}
-			} else if tp.Name.Local == "Valute" {
+			} else if tp.Name.Local == "Valute" { // достаем информацию о валюте
 				var v Valute
 				decoder.DecodeElement(&v, &tp)
-				mt.Lock()
-				valutesCourse[v.Name] = append(valutesCourse[v.Name],
+				mt.Lock()                                             // блокируем горутины чтобы записать информацию в мапу
+				valutesCourse[v.Name] = append(valutesCourse[v.Name], // записываем информацию о валюте в мапу
 					ValuteInformation{&v, date})
-				mt.Unlock()
+				mt.Unlock() // разблокирываем горутины
 
 			}
 		}
 	}
 }
 
-type ValuteStats struct {
+type ValuteStats struct { // структура для удобной записи результата по каждой валюте
 	Name    string
 	Min     float64
 	Max     float64
@@ -69,7 +70,8 @@ type ValuteStats struct {
 	MinDate string
 }
 
-func countStats(valuesInfo []ValuteInformation) ValuteStats {
+func countStats(valuesInfo []ValuteInformation) ValuteStats { // Функция вычисляет данные о максимальном, минимальном и
+	// среднем значениях за данный период времени
 	valStat := ValuteStats{Name: valuesInfo[0].Valute.Name, Min: math.MaxInt64, Max: math.MinInt64, Mid: 0}
 	for _, valute := range valuesInfo {
 		value, _ := strconv.ParseFloat(strings.Replace(valute.Valute.Value, ",", ".", -1), 64)
@@ -90,10 +92,11 @@ func countStats(valuesInfo []ValuteInformation) ValuteStats {
 func main() {
 	currentTime := time.Now()
 	var mt sync.Mutex
-	valutesCourse := make(map[string][]ValuteInformation)
 	var wg sync.WaitGroup
+	valutesCourse := make(map[string][]ValuteInformation)
 	url := "http://www.cbr.ru/scripts/XML_daily_eng.asp?date_req="
-	for i := 0; i <= 90; i++ {
+	for i := 0; i <= 90; i++ { // генерируем дату для обращения к Api и запускаем отдельный поток для
+		// получения информации из api
 		oldDate := currentTime.AddDate(0, 0, -i)
 		stringDate := oldDate.Format("02/01/2006")
 		wg.Add(1)
@@ -103,13 +106,20 @@ func main() {
 
 		}(url)
 	}
-	wg.Wait()
-	for _, value := range valutesCourse {
-		result := countStats(value)
-		fmt.Printf("Valute: %s\n", result.Name)
-		fmt.Printf("Max Value: %f Date: %s\n", result.Max, result.MaxDate)
-		fmt.Printf("Min Value: %f Date: %s\n", result.Min, result.MinDate)
-		fmt.Printf("Mid Value: %f\n", result.Mid)
-		fmt.Println("--------------------------------------")
+	wg.Wait()                             // ожидаем горутины получающие данные из Api
+	for _, value := range valutesCourse { // вычисляем статистику валюты за данный период в многопоточном режиме
+		wg.Add(1)
+		go func(value []ValuteInformation) {
+			result := countStats(value)
+			mt.Lock()
+			fmt.Printf("Valute: %s\n", result.Name)
+			fmt.Printf("Max Value: %f Date: %s\n", result.Max, result.MaxDate)
+			fmt.Printf("Min Value: %f Date: %s\n", result.Min, result.MinDate)
+			fmt.Printf("Mid Value: %f\n", result.Mid)
+			fmt.Println("--------------------------------------")
+			mt.Unlock()
+			wg.Done()
+		}(value)
 	}
+	wg.Wait()
 }
